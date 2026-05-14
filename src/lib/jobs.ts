@@ -52,3 +52,28 @@ export async function anchorToBlockchain(
   void bookingId
   void payload
 }
+
+// -----------------------------------------------------------
+// expireAuction
+// Schedules an auction expiry job to fire at auction_deadline.
+// When it fires, the worker sets the booking status to 'expired'
+// and marks all open/countered quotes as 'expired'.
+// -----------------------------------------------------------
+
+export async function expireAuction(bookingId: string): Promise<void> {
+  // TODO: enqueue BullMQ delayed job → 'auctions' queue, name: 'expire-auction'
+  // TODO: worker should set booking status='expired', all open quotes status='expired'
+  void bookingId
+}
+
+// -----------------------------------------------------------
+// notifyNewQuote
+// Sends a notification to the shipper when a new quote is
+// submitted on their booking.
+// -----------------------------------------------------------
+
+export async function notifyNewQuote(bookingId: string, driverName: string): Promise<void> {
+  // TODO: enqueue BullMQ job → 'notifications' queue, name: 'notify-new-quote'
+  void bookingId
+  void driverName
+}

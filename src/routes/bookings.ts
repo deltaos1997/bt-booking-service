@@ -1,75 +1,74 @@
-import type { FastifyInstance } from 'fastify'
-import { z } from 'zod'
+import type { FastifyInstance, FastifyReply } from 'fastify'
+import { BookingError, CreateBookingBodySchema } from '../lib/types.js'
+import * as svc from '../lib/service.js'
 
-const CreateBookingBody = z.object({
-  pickup_address: z.string(),
-  pickup_lat: z.number(),
-  pickup_lng: z.number(),
-  drop_address: z.string(),
-  drop_lat: z.number(),
-  drop_lng: z.number(),
-  vehicle_type: z.enum(['mini_truck', 'lcv', 'hcv', 'trailer']),
-  load_type: z.enum(['general', 'fragile', 'perishable', 'hazardous', 'heavy_machinery']),
-  weight_kg: z.number().positive(),
-  scheduled_at: z.string().datetime(),
-  notes: z.string().optional(),
-})
+function handleError(reply: FastifyReply, err: unknown) {
+  if (err instanceof BookingError) {
+    return reply.status(err.httpStatus).send({ success: false, error: err.message, code: err.code })
+  }
+  return reply.status(500).send({ success: false, error: 'Internal server error' })
+}
 
 export async function bookingRoutes(app: FastifyInstance) {
 
-  // POST /bookings — create a new booking, get price quote, find nearest driver
+  // POST /bookings — shipper creates a booking intent (status=pending)
   app.post('/', async (req, reply) => {
-    const body = CreateBookingBody.safeParse(req.body)
-    if (!body.success) return reply.status(400).send({ success: false, error: body.error.errors[0].message })
-
-    // TODO: verify JWT, get shipper_id from token
-    // TODO: call pricing-service for quote
-    // TODO: insert booking into Supabase
-    // TODO: trigger driver matching
-
-    return reply.status(201).send({
-      success: true,
-      data: {
-        id: 'booking-stub-id',
-        status: 'pending',
-        message: 'Booking created — driver matching in Sprint 3-4',
-        ...body.data,
-      },
-    })
+    const parsed = CreateBookingBodySchema.safeParse(req.body)
+    if (!parsed.success) {
+      return reply.status(400).send({
+        success: false,
+        error: parsed.error.errors[0].message,
+        code: 'VALIDATION_ERROR',
+      })
+    }
+    try {
+      const booking = await svc.createBooking(parsed.data, req.user)
+      return reply.status(201).send({ success: true, data: booking })
+    } catch (err) {
+      return handleError(reply, err)
+    }
   })
 
-  // GET /bookings/:id
+  // GET /bookings/:id — get booking with driver profile joined
   app.get('/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
-    // TODO: fetch from Supabase with driver + shipper details
-    return reply.send({ success: true, data: { id, status: 'stub — Sprint 3' } })
+    try {
+      const booking = await svc.getBooking(id, req.user)
+      return reply.send({ success: true, data: booking })
+    } catch (err) {
+      return handleError(reply, err)
+    }
   })
 
-  // GET /bookings — list bookings for current user
-  app.get('/', async (_req, reply) => {
-    // TODO: filter by shipper_id or driver_id from JWT
-    return reply.send({ success: true, data: [] })
+  // GET /bookings — shipper: own bookings | driver: pending bookings | admin: all
+  app.get('/', async (req, reply) => {
+    try {
+      const bookings = await svc.listBookings(req.user)
+      return reply.send({ success: true, data: bookings })
+    } catch (err) {
+      return handleError(reply, err)
+    }
   })
 
-  // PATCH /bookings/:id/cancel
+  // PATCH /bookings/:id/accept — driver accepts a pending booking
+  app.patch('/:id/accept', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    try {
+      const booking = await svc.acceptBooking(id, req.user)
+      return reply.send({ success: true, data: booking })
+    } catch (err) {
+      return handleError(reply, err)
+    }
+  })
+
+  // PATCH /bookings/:id/cancel — cancel from pending or accepted
   app.patch('/:id/cancel', async (req, reply) => {
     const { id } = req.params as { id: string }
-    // TODO: check cancellation window (2hr before pickup), update status
-    return reply.send({ success: true, data: { id, status: 'cancelled' } })
-  })
-
-  // POST /bookings/:id/confirm-pickup — driver OTP confirmation
-  app.post('/:id/confirm-pickup', async (req, reply) => {
-    const { id } = req.params as { id: string }
-    const { otp } = (req.body as any) ?? {}
-    // TODO: verify OTP stored in Redis for this booking, update status → in_transit
-    return reply.send({ success: true, data: { id, status: 'in_transit', otp_received: otp } })
-  })
-
-  // POST /bookings/:id/deliver — driver marks delivery, triggers ePOD + payment release
-  app.post('/:id/deliver', async (req, reply) => {
-    const { id } = req.params as { id: string }
-    // TODO: save ePOD photo, update status → delivered, call payment-service to release escrow
-    return reply.send({ success: true, data: { id, status: 'delivered' } })
+    try {
+      const booking = await svc.cancelBooking(id, req.user)
+      return reply.send({ success: true, data: booking })
+    } catch (err) {
+      return handleError(reply, err)
+    }
   })
 }

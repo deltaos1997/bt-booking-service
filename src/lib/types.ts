@@ -1,140 +1,203 @@
-// ============================================================
-// src/lib/types.ts
-//
-// Responsibility: all shared domain types for the booking service.
-//   - BookingStop: a single geographic stop on an order
-//   - OrderState: full lifecycle enum
-//   - Booking: the core domain entity
-//   - CreateBookingInput: inbound shape for creating a booking
-//   - CreateBookingInputSchema: Zod runtime validation for CreateBookingInput
-//   - BookingError: base domain error with a machine-readable code
-// ============================================================
-
 import { z } from 'zod'
 
 // -----------------------------------------------------------
-// BookingStop
-// Represents either the pickup or delivery point on an order.
+// BookingStatus — mirrors the DB enum booking_status exactly
 // -----------------------------------------------------------
 
-export type BookingStop = {
-  address: string
-  lat: number
-  lng: number
-  contactName: string
-  contactPhone: string
-  scheduledAt: Date
-  actualAt?: Date
-  notes?: string
-}
+export type BookingStatus = 'pending' | 'accepted' | 'in_transit' | 'completed' | 'cancelled' | 'negotiating'
 
 // -----------------------------------------------------------
-// OrderState
-// Full lifecycle of a booking, from draft through completion.
+// BookingType — direct (1:1) or auction (1:many quotes)
 // -----------------------------------------------------------
 
-export enum OrderState {
-  DRAFT           = 'DRAFT',
-  SUBMITTED       = 'SUBMITTED',
-  ASSIGNED        = 'ASSIGNED',
-  PICKUP_EN_ROUTE = 'PICKUP_EN_ROUTE',
-  AT_PICKUP       = 'AT_PICKUP',
-  IN_TRANSIT      = 'IN_TRANSIT',
-  AT_DELIVERY     = 'AT_DELIVERY',
-  DELIVERED       = 'DELIVERED',
-  COMPLETED       = 'COMPLETED',
-  CANCELLED       = 'CANCELLED',
-  DISPUTED        = 'DISPUTED',
-}
+export type BookingType = 'direct' | 'auction'
 
 // -----------------------------------------------------------
-// Booking
-// Core domain entity persisted in the `orders` table.
+// QuoteStatus — lifecycle of a driver's quote on a booking
 // -----------------------------------------------------------
 
-export type Booking = {
+export type QuoteStatus = 'submitted' | 'countered' | 'accepted' | 'rejected' | 'withdrawn' | 'expired'
+
+// -----------------------------------------------------------
+// DbBooking — raw row shape from the `bookings` table
+// -----------------------------------------------------------
+
+export type DbBooking = {
   id: string
-  shipperId: string
-  driverId?: string
-  carrierId?: string
-  vehicleId?: string
-  pickup: BookingStop
-  delivery: BookingStop
-  orderType: string
-  cargoType: string
-  weightKg: number
-  volumeCbm?: number
-  declaredValue: number
-  description: string
-  specialInstructions?: string
-  rateAmount: number
-  rateType: string
-  requiresPhotoProof: boolean
-  requiresSignature: boolean
-  ewayBillNumber?: string
-  ewayBillExpiry?: Date
-  currentState: OrderState
-  createdAt: Date
-  updatedAt: Date
+  shipper_id: string
+  driver_id: string | null
+  shipper_name: string
+  shipper_contact: string
+  source_address: string
+  source_lat: number
+  source_lng: number
+  destination_address: string
+  dest_lat: number
+  dest_lng: number
+  load_type: string
+  weight_kg: number
+  quoted_price: number
+  final_price: number | null
+  pickup_date: string
+  pickup_time_slot: string | null
+  status: BookingStatus
+  special_instructions: string | null
+  booking_type: BookingType
+  target_driver_id: string | null
+  auction_deadline: string | null
+  min_acceptable: number | null
+  awarded_quote_id: string | null
+  dimensions_json: Record<string, unknown> | null
+  created_at: string
+  updated_at: string
 }
 
 // -----------------------------------------------------------
-// CreateBookingInput
-// Caller-supplied fields only — the service fills the rest.
+// DbQuote — raw row shape from the `quotes` table
 // -----------------------------------------------------------
 
-export type CreateBookingInput = Omit<
-  Booking,
-  'id' | 'currentState' | 'createdAt' | 'updatedAt' | 'driverId' | 'carrierId' | 'vehicleId'
->
+export type DbQuote = {
+  id: string
+  booking_id: string
+  driver_id: string
+  amount: number
+  message: string | null
+  status: QuoteStatus
+  submitted_at: string
+  expires_at: string | null
+  updated_at: string
+}
 
 // -----------------------------------------------------------
-// Zod schema for CreateBookingInput
-// Use for request body validation at the route layer.
+// DbNegotiation — append-only log of price offers/counters
 // -----------------------------------------------------------
 
-const BookingStopSchema = z.object({
-  address:      z.string().min(1),
-  lat:          z.number(),
-  lng:          z.number(),
-  contactName:  z.string().min(1),
-  contactPhone: z.string().min(1),
-  scheduledAt:  z.coerce.date(),
-  actualAt:     z.coerce.date().optional(),
-  notes:        z.string().optional(),
+export type DbNegotiation = {
+  id: string
+  quote_id: string
+  booking_id: string
+  actor_id: string
+  actor_role: 'shipper' | 'driver'
+  amount: number
+  message: string | null
+  created_at: string
+}
+
+// -----------------------------------------------------------
+// DriverProfile — joined from drivers + users
+// -----------------------------------------------------------
+
+export type DriverProfile = {
+  id: string
+  truck_number: string
+  truck_type: string
+  truck_capacity_kg: number | null
+  average_rating: number
+  total_trips: number
+  user: {
+    id: string
+    full_name: string | null
+    phone_number: string
+  }
+}
+
+// -----------------------------------------------------------
+// BookingWithProfiles — booking row with optional driver join
+// -----------------------------------------------------------
+
+export type BookingWithProfiles = DbBooking & {
+  driver?: DriverProfile | null
+}
+
+// -----------------------------------------------------------
+// Auth types
+// -----------------------------------------------------------
+
+export type UserRole = 'shipper' | 'driver' | 'admin'
+
+export type AuthenticatedUser = {
+  userId: string      // public.users.id
+  authId: string      // auth.users.id (JWT sub claim)
+  role: UserRole
+  fullName: string | null
+  phoneNumber: string
+}
+
+// -----------------------------------------------------------
+// CreateBookingBodySchema — request body for POST /bookings
+// Shipper info (shipper_id, shipper_name, shipper_contact)
+// is filled server-side from the JWT — not accepted from client.
+// -----------------------------------------------------------
+
+export const CreateBookingBodySchema = z.object({
+  source_address:       z.string().min(1),
+  source_lat:           z.number(),
+  source_lng:           z.number(),
+  destination_address:  z.string().min(1),
+  dest_lat:             z.number(),
+  dest_lng:             z.number(),
+  load_type:            z.string().min(1),
+  weight_kg:            z.number().positive(),
+  quoted_price:         z.number().positive(),
+  pickup_date:          z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'pickup_date must be YYYY-MM-DD'),
+  pickup_time_slot:     z.string().optional(),
+  special_instructions: z.string().optional(),
+  booking_type:         z.enum(['direct', 'auction']).default('direct'),
+  target_driver_id:     z.string().uuid().optional(),
+  auction_deadline:     z.string().datetime().optional(),
+  dimensions_json:      z.record(z.unknown()).optional(),
 })
 
-export const CreateBookingInputSchema = z.object({
-  shipperId:           z.string().uuid(),
-  pickup:              BookingStopSchema,
-  delivery:            BookingStopSchema,
-  orderType:           z.string().min(1),
-  cargoType:           z.string().min(1),
-  weightKg:            z.number().positive(),
-  volumeCbm:           z.number().positive().optional(),
-  declaredValue:       z.number().nonnegative(),
-  description:         z.string().min(1),
-  specialInstructions: z.string().optional(),
-  rateAmount:          z.number().nonnegative(),
-  rateType:            z.string().min(1),
-  requiresPhotoProof:  z.boolean(),
-  requiresSignature:   z.boolean(),
-  ewayBillNumber:      z.string().optional(),
-  ewayBillExpiry:      z.coerce.date().optional(),
-})
+export type CreateBookingBody = z.infer<typeof CreateBookingBodySchema>
 
 // -----------------------------------------------------------
-// BookingError
-// Base domain error; carry a machine-readable code so HTTP
-// handlers can map errors to status codes without string-matching.
+// SubmitQuoteBodySchema — request body for POST /quotes
 // -----------------------------------------------------------
+
+export const SubmitQuoteBodySchema = z.object({
+  amount:  z.number().positive(),
+  message: z.string().optional(),
+})
+
+export type SubmitQuoteBody = z.infer<typeof SubmitQuoteBodySchema>
+
+// -----------------------------------------------------------
+// CounterQuoteBodySchema — request body for PATCH /quotes/:id/counter
+// -----------------------------------------------------------
+
+export const CounterQuoteBodySchema = z.object({
+  amount:  z.number().positive(),
+  message: z.string().optional(),
+})
+
+export type CounterQuoteBody = z.infer<typeof CounterQuoteBodySchema>
+
+// -----------------------------------------------------------
+// BookingError — domain error with HTTP status attached
+// -----------------------------------------------------------
+
+export type BookingErrorCode =
+  | 'NOT_FOUND'
+  | 'FORBIDDEN'
+  | 'INVALID_TRANSITION'
+  | 'VALIDATION_ERROR'
+  | 'AUCTION_CLOSED'
+  | 'DUPLICATE_QUOTE'
+  | 'QUOTE_NOT_FOUND'
+  | 'ALREADY_AWARDED'
 
 export class BookingError extends Error {
-  public readonly code: string
+  public readonly code: BookingErrorCode
+  public readonly httpStatus: number
 
-  constructor(message: string, code: string) {
+  constructor(
+    message: string,
+    code: BookingErrorCode,
+    httpStatus = 400,
+  ) {
     super(message)
     this.name = 'BookingError'
     this.code = code
+    this.httpStatus = httpStatus
   }
 }
